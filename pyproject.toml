@@ -1,0 +1,20 @@
+[project]
+name = "excel-importer"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "yongg", email = "2814744065@qq.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "pandas>=3.0.3",
+    "sqlalchemy>=2.0.50",
+]
+
+[project.scripts]
+excel-importer = "excel_importer:main"
+
+[build-system]
+requires = ["uv_build>=0.9.30,<0.10.0"]
+build-backend = "uv_build"
