@@ -9,11 +9,11 @@ from dataclasses import dataclass, field
 from numbers import Integral, Real
 from pathlib import Path
 from typing import Any
-from logging import Logger
 from xml.etree.ElementTree import ParseError
 from zipfile import BadZipFile
 
 import pandas as pd
+from loguru import logger
 from pandas import DataFrame
 from sqlalchemy import String, select, tuple_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -89,7 +89,7 @@ class ExcelImporterConfig:
 class ExcelImporter:
     """使用SQLAlchemy 2.0的表格数据导入工具类（支持xlsx和csv）"""
 
-    def __init__(self, session: Session, logger: Logger):
+    def __init__(self, session: Session):
         """
         初始化导入工具
 
@@ -97,7 +97,6 @@ class ExcelImporter:
             session: SQLAlchemy Session对象
         """
         self.session = session
-        self.logger = logger
 
     def import_excel(
         self,
@@ -130,10 +129,6 @@ class ExcelImporter:
             optional_fields,
         ) = self._resolve_import_options(config=config)
 
-        # logger.info(
-        #     f"构建数据记录: {excel_path}",
-        # )
-
         df, records, errors, row_skipped_count = self._build_records(
             excel_path=excel_path,
             sheet_name=sheet_name,
@@ -146,13 +141,15 @@ class ExcelImporter:
 
         # 试运行模式：仅打印记录，不写入数据库
         if dry_run:
-            self.logger.info(f"[dry_run] 文件: {excel_path} | 共 {len(records)} 条记录")
+            logger.info("[dry_run] 文件: {} | 共 {} 条记录", excel_path, len(records))
             for idx, record in enumerate(records, start=1):
-                self.logger.info(f"[dry_run] #{idx}: {record}")
+                logger.info("[dry_run] #{}: {}", idx, record)
             if errors:
                 for err in errors:
-                    self.logger.warning(
-                        f"[dry_run] 行 {err.get('row')} 处理错误: {err.get('error')}"
+                    logger.warning(
+                        "[dry_run] 行 {} 处理错误: {}",
+                        err.get("row"),
+                        err.get("error"),
                     )
             return {
                 "total_rows": len(df),
@@ -232,7 +229,7 @@ class ExcelImporter:
 
         # 空表直接返回：无数据行时无需继续映射和入库
         if df.empty:
-            self.logger.warning(f"文件无可导入数据，已跳过: {excel_path}")
+            logger.warning("文件无可导入数据，已跳过: {}", excel_path)
             return df, [], [], 0
 
         # 解析映射关系（支持多个候选列名）
@@ -269,8 +266,8 @@ class ExcelImporter:
 
             except SkipRowError:
                 row_skipped_count += 1
-            except RuntimeError as e:
-                self.logger.exception(f"处理Excel行时发生错误，已跳过: {e}")
+            except RuntimeError:
+                logger.exception("处理Excel行时发生错误，已跳过")
                 errors.append({"row": excel_row_num, "error": str(e)})
 
         return df, records, errors, row_skipped_count
@@ -315,8 +312,11 @@ class ExcelImporter:
                     )
                 except (ParseError, BadZipFile) as e:
                     if attempt < 2:
-                        self.logger.warning(
-                            f"读取 Excel 失败，准备重试 ({attempt + 1}/3): {file_path} | 错误: {e}"
+                        logger.warning(
+                            "读取 Excel 失败，准备重试 ({}/3): {} | 错误: {}",
+                            attempt + 1,
+                            file_path,
+                            e,
                         )
                         time.sleep(1)
                         continue
@@ -345,8 +345,10 @@ class ExcelImporter:
                 normalized_col in normalized_lookup
                 and normalized_lookup[normalized_col] != original_col
             ):
-                self.logger.warning(
-                    f"检测到规范化后重复列名: '{normalized_lookup[normalized_col]}' 和 '{original_col}'，将优先使用前者"
+                logger.warning(
+                    "检测到规范化后重复列名: '{}' 和 '{}'，将优先使用前者",
+                    normalized_lookup[normalized_col],
+                    original_col,
                 )
                 continue
             normalized_lookup[normalized_col] = str(original_col)
@@ -542,16 +544,17 @@ class ExcelImporter:
                     if not unique_warned:
                         msg = str(e).lower()
                         if "unique" in msg:
-                            self.logger.warning(
+                            logger.warning(
                                 "检测到唯一约束冲突，后续重复记录将被跳过"
                             )
                             unique_warned = True
                         else:
-                            self.logger.warning(
-                                f"插入记录时发生完整性错误，已跳过，错误: {e}"
+                            logger.warning(
+                                "插入记录时发生完整性错误，已跳过，错误: {}",
+                                e,
                             )
-                except (SQLAlchemyError, RuntimeError, ValueError, TypeError) as e:
-                    self.logger.exception(f"插入记录时发生错误，已跳过: {e}")
+                except (SQLAlchemyError, RuntimeError, ValueError, TypeError):
+                    logger.exception("插入记录时发生错误，已跳过")
                     batch_skipped += 1
 
             return batch_inserted, batch_updated, batch_skipped
@@ -615,7 +618,7 @@ class ExcelImporter:
                     batch_updated += len(update_mappings)
                 except IntegrityError as e:
                     self.session.rollback()
-                    self.logger.warning(f"bulk upsert失败，已回退到逐行处理: {e}")
+                    logger.warning("bulk upsert失败，已回退到逐行处理: {}", e)
                     (
                         batch_inserted,
                         batch_updated,
@@ -623,7 +626,7 @@ class ExcelImporter:
                     ) = _insert_batch_rowwise(batch)
                 except (SQLAlchemyError, RuntimeError, ValueError, TypeError) as e:
                     self.session.rollback()
-                    self.logger.warning(f"bulk upsert失败，已回退到逐行处理: {e}")
+                    logger.warning("bulk upsert失败，已回退到逐行处理: {}", e)
                     (
                         batch_inserted,
                         batch_updated,
@@ -642,7 +645,7 @@ class ExcelImporter:
                     ) = _insert_batch_rowwise(batch)
                 except (SQLAlchemyError, RuntimeError, ValueError, TypeError) as e:
                     self.session.rollback()
-                    self.logger.warning(f"bulk insert失败，已回退到逐行处理: {e}")
+                    logger.warning("bulk insert失败，已回退到逐行处理: {}", e)
                     (
                         batch_inserted,
                         batch_updated,
@@ -656,8 +659,13 @@ class ExcelImporter:
                 self.session.rollback()
                 raise e
 
-            self.logger.info(
-                f"批次处理完成: {i + 1}~{min(i + batch_size, len(records))} ( 插入: {batch_inserted} | 更新: {batch_updated} | 跳过: {batch_skipped} )"
+            logger.info(
+                "批次处理完成: {}~{} ( 插入: {} | 更新: {} | 跳过: {} )",
+                i + 1,
+                min(i + batch_size, len(records)),
+                batch_inserted,
+                batch_updated,
+                batch_skipped,
             )
 
             inserted_count += batch_inserted
