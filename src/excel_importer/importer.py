@@ -26,10 +26,57 @@ class SkipRowError(Exception):
 
 @dataclass
 class ExcelImporterConfig:
-    """Excel导入配置类，包含字段映射和清洗器等设置"""
+    """Excel导入配置类，包含字段映射和清洗器等设置。
+
+    使用示例::
+
+        config = ExcelImporterConfig(
+            model=Product,
+            field_mapping={
+                "name":           "商品名称",           # 单列精确匹配
+                "code":           "编码|编号",          # 多个候选列名（管道符分隔）
+                "price":          ["单价", "价格"],      # 多个候选列名（列表形式）
+            },
+            field_cleaners={
+                "价格": lambda v: float(v) if v else 0.0,
+            },
+            optional_fields=["remark"],
+            conflict_keys=["code"],
+        )
+
+    Attributes:
+        model: SQLAlchemy ORM 模型类（必须继承 DeclarativeBase），对应目标数据库表。
+        field_mapping: Excel 列名 → 模型字段的映射字典。
+            - key: 模型属性名（即 ORM 模型中的列名）。
+            - value: 可以是以下三种形式之一：
+                1. 单个列名字符串，如 ``"商品名称"`` —— 精确匹配 Excel 中的该列。
+                2. 管道符分隔的字符串，如 ``"编码|编号"`` —— 按顺序尝试匹配，命中第一个存在的列。
+                3. 字符串列表，如 ``["单价", "价格"]`` —— 同上，按顺序尝试匹配。
+            - 列名匹配时会自动忽略大小写、多余空白、BOM 字符等差异。
+        field_cleaners: 数据清洗函数字典，用于在写入数据库前对值进行转换。
+            - key: 可以是 Excel 列名、映射 key（管道符拼接后的形式）或模型属性名，
+              三者任选其一均可命中。查找优先级：Excel 列名 > 映射 key > 模型属性名。
+            - value: 接收原始值（``Any``）、返回清洗后值的可调用对象。
+              当单元格为空时，传入值为 ``None``。
+            - 示例：``{"价格": lambda v: float(v) if v is not None else 0.0}``
+        custom_fields_handler: 自定义字段处理函数，用于处理 field_mapping 之外的额外字段。
+            - 接收当前行的 ``pandas.Series``（可用 ``row["列名"]`` 取值），
+              返回 ``{模型属性名: 值}`` 字典，结果会合并到该行记录中。
+            - 设为 ``None``（默认）则不启用。
+        sheet_name: 读取的 Excel 工作表名称或索引。``None`` 时默认读取第一个工作表（索引 0）。
+            - 字符串：按名称匹配，如 ``"Sheet1"``、``"数据表"``。
+            - 整数：按位置索引，如 ``0`` 表示第一个工作表。
+            - CSV 文件会忽略此参数。
+        start_row: 跳过 Excel 前几行（表头之前的行）。``None`` 时默认为 0（不跳过）。
+            - 例如 ``start_row=2`` 会跳过前两行，从第三行开始读取表头。
+        conflict_keys: 用于判断记录是否已存在的键字段列表。``None`` 时默认使用模型主键。
+            - 例如 ``["code"]`` 表示以 code 字段判断是否冲突（重复）。
+            - 仅在 ``update_on_conflict=True`` 时生效。
+        optional_fields: 可选字段列表，其中的模型属性如果在 Excel 中找不到对应列也不会报错，
+            而是静默跳过。``None`` 表示所有映射字段均为必填。
+    """
 
     model: type[DeclarativeBase]
-    # value支持单列名，或使用"列A|列B"/ ["列A", "列B"] 表示候选列名
     field_mapping: dict[str, str] | dict[str, list[str]]
     field_cleaners: dict[str, Callable[[Any], Any]] = field(default_factory=dict)
     custom_fields_handler: Callable[[pd.Series], dict[str, Any]] | None = None
